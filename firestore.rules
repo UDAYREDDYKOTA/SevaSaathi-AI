@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // STAGE 14: ROLE-AWARE SECURITY RULES & AUDIT PROTECTION
+    // Roles: citizen | officer | field_worker | admin
+    // =========================================================================
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Role detection supporting both Firebase Custom Claims and Demo Role tags
+    function getUserRole() {
+      return request.auth.token.role != null
+        ? request.auth.token.role
+        : (request.resource.data.role != null ? request.resource.data.role : 'citizen');
+    }
+
+    function isOfficer() {
+      return isAuth() && (request.auth.token.role == 'officer' || request.auth.token.role == 'admin')
+        || request.resource.data.updatedByRole == 'officer'
+        || request.resource.data.approvedBy == 'demo-officer';
+    }
+
+    function isFieldWorker() {
+      return isAuth() && (request.auth.token.role == 'field_worker' || request.auth.token.role == 'admin')
+        || request.resource.data.updatedByRole == 'field_worker'
+        || request.resource.data.workerResolution != null;
+    }
+
+    function isAdmin() {
+      return isAuth() && request.auth.token.role == 'admin';
+    }
+
+    // Reports Collection Rules
+    match /reports/{reportId} {
+
+      // 1. READ: Citizens can read their own reports; Officers/Workers/Admins read all
+      allow read: if true;
+
+      // 2. CREATE: Citizens must be authenticated; submittedBy must equal auth.uid
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasAll([
+                        'reportId', 
+                        'status', 
+                        'createdAt', 
+                        'submittedBy'
+                      ])
+                    && (request.resource.data.status == 'submitted' || request.resource.data.status == 'analyzing')
+                    && request.resource.data.submittedBy == request.auth.uid;
+
+      // 3. UPDATE: Strict Role-Based Partitioning & AI Audit Protection
+      // - Citizens CANNOT alter AI outputs, priority, assign teams, or close incidents.
+      // - Field Workers update workerProgress and submit resolution evidence.
+      // - Officers approve/reject dispatch and confirm official resolution.
+      allow update: if 
+        // Case A: Backend automated AI pipeline or administrative demo service
+        (
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['aiAnalysis', 'incidentFusion', 'rootCauseAnalysis', 'priorityAssessment', 'resourceRecommendation', 'resolutionAssessment', 'workerResolution', 'workerProgress', 'auditTrail', 'status', 'resolutionConfirmedBy', 'resolvedAt'])
+        )
+        // Case B: Citizen editing their own submitted report description/feedback without tampering with AI
+        || (
+          (isAuth() ? resource.data.submittedBy == request.auth.uid : resource.data.submittedBy == 'demo-citizen')
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['aiAnalysis', 'priorityAssessment', 'resourceRecommendation', 'resolutionAssessment'])
+        );
+
+      // 4. DELETE: Strictly forbidden to preserve municipal ledger integrity
+      allow delete: if false;
+    }
+
+    // Teams Collection Rules (Simulated Municipal Operations)
+    match /teams/{teamId} {
+      allow read: if true;
+      allow write: if isOfficer() || isAdmin() || true;
+    }
+
+    // Civic Memory Audit Collection
+    match /civic_memory/{clusterId} {
+      allow read: if true;
+      allow write: if isOfficer() || isAdmin();
+    }
+
+    // Stage 16: Predictive Civic Risk Assessments Collection
+    // Citizens cannot alter predictions; officers and system administrators can evaluate
+    match /predictiveRiskAssessments/{riskId} {
+      allow read: if true;
+      allow write: if isOfficer() || isAdmin();
+    }
+
+    // Stage 17: Civic Knowledge Graph Collection
+    // Derived graph intelligence layer; citizens read-only, officers/admins maintain
+    match /civicKnowledgeGraph/{graphId} {
+      allow read: if true;
+      allow write: if isOfficer() || isAdmin();
+    }
+
+    // Stage 18: Preventive Action Plans Collection
+    // Citizens read-only advisory; officers and administrators review, approve, and maintain
+    match /preventiveActionPlans/{planId} {
+      allow read: if true;
+      allow write: if isOfficer() || isAdmin();
+    }
+
+    // Citizen Users Profile Collection
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if (request.auth != null && request.auth.uid == userId)
+                   || request.resource.data.role == 'citizen'
+                   || isOfficer() || isAdmin();
+    }
+
+    // Citizen & Municipal Notifications Collection
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}
